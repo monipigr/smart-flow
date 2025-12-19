@@ -1,209 +1,345 @@
 // SPDX-License-Identifier: MIT
-
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
-import {SmartFlow} from "../src/SmartFlow.sol";
+// import "forge-std/Test.sol";
+import "forge-std/Test.sol";
+import "../src/SmartFlow.sol";
+
+import {MockAggregator} from "../src/MockAggregator.sol";
+import "../lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
+import "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import "../lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract SmartFlowTest is Test {
-    address priceFeedEthUsd = 0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612;
+    SmartFlow public smartFlow;
+
+    // Mock contracts
+    IERC20 public rewardToken;
+    MockAggregator public primaryPriceFeed;
+    MockAggregator public secondaryPriceFeed;
+
+    // Test addresses
+    address public owner = address(0x1);
+    address public user1 = address(0x2);
+    address public user2 = address(0x3);
+
+    // Constants
+    uint256 public constant THRESHOLD = 3500 * 1e8; // $3500 with 8 decimals
+    uint256 public constant REWARD_AMOUNT = 10 * 1e18; // 10 tokens
+    uint256 public constant COOLDOWN = 24 hours;
+
+    function setUp() public {
+        vm.startPrank(owner);
+
+        // Deploy mock contracts
+        rewardToken = IERC20(address(new MockERC20()));
+
+        primaryPriceFeed = new MockAggregator(2800);
+        secondaryPriceFeed = new MockAggregator(2850);
+
+        // Deploy SmartFlow contract
+        smartFlow = new SmartFlow(
+            address(rewardToken),
+            THRESHOLD,
+            REWARD_AMOUNT,
+            COOLDOWN,
+            address(primaryPriceFeed),
+            address(secondaryPriceFeed)
+        );
+
+        vm.stopPrank();
+
+        // Fund the contract with reward tokens
+        MockERC20(address(rewardToken)).mint(
+            address(smartFlow),
+            1_000_000 ether
+        );
+
+        // Give users some ETH for gas
+        vm.deal(user1, 10 ether);
+        vm.deal(user2, 10 ether);
+    }
+
+    function test_claimMyReward() public {
+        uint256 initialBalance = rewardToken.balanceOf(user1);
+        uint256 contractBalance = rewardToken.balanceOf(address(smartFlow));
+
+        vm.startPrank(user1);
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+
+        uint256 finalBalance = rewardToken.balanceOf(user1);
+        uint256 finalContractBalance = rewardToken.balanceOf(
+            address(smartFlow)
+        );
+
+        assertEq(finalBalance - initialBalance, REWARD_AMOUNT);
+        assertEq(contractBalance - finalContractBalance, REWARD_AMOUNT);
+        assertEq(smartFlow.lastClaimAt(user1), block.timestamp);
+    }
+
+    function test_claimMyReward_revertIfPriceAboveThreshold() public {
+        primaryPriceFeed.setPrice(3800 * 1e8);
+        vm.startPrank(user1);
+        vm.expectRevert("ETH price higher than threshold");
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+    }
+
+    function test_claimMyReward_revertIfPriceZero() public {
+        MockAggregator(address(primaryPriceFeed)).setPrice(0);
+
+        vm.startPrank(user1);
+        vm.expectRevert("Primary feed: price <= 0");
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+    }
+
+    function test_claimMyReward_revertIfCooldownNotPassed() public {
+        vm.startPrank(user1);
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+
+        // Try to claim again only 1 hour later
+        vm.warp(block.timestamp + 1 hours);
+        vm.startPrank(user1);
+        vm.expectRevert("You must wait 24h");
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+    }
+
+    function test_claimMyReward_cooldownPassed() public {
+        vm.startPrank(user1);
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+
+        // Skip time to pass cooldown
+        vm.warp(block.timestamp + COOLDOWN + 1);
+        primaryPriceFeed.setPrice(2500 * 1e8);
+
+        // Claim again
+        uint256 initialBalance = rewardToken.balanceOf(user1);
+
+        vm.startPrank(user1);
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+
+        uint256 finalBalance = rewardToken.balanceOf(user1);
+        assertEq(finalBalance - initialBalance, REWARD_AMOUNT);
+    }
+
+    function test_claimMyReward_primaryFeedFails_usesSecondary() public {
+        // Make primary feed fail
+        MockAggregator(address(primaryPriceFeed)).setShouldFail(true);
+
+        vm.startPrank(user1);
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+
+        assertEq(smartFlow.lastClaimAt(user1), block.timestamp);
+    }
+
+    function test_claimMyReward_revertIFbothFeedsFail() public {
+        // Make both feeds fail
+        MockAggregator(address(primaryPriceFeed)).setShouldFail(true);
+        MockAggregator(address(secondaryPriceFeed)).setShouldFail(true);
+
+        vm.startPrank(user1);
+        vm.expectRevert("Both price feeds failed");
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+    }
+
+    function test_claimMyReward_stalePrimaryFeed() public {
+        vm.warp(10 hours);
+        MockAggregator(address(primaryPriceFeed)).setTimestamp(
+            block.timestamp - 2 hours
+        );
+
+        MockAggregator(address(primaryPriceFeed)).setPrice(2500 * 1e8);
+        MockAggregator(address(secondaryPriceFeed)).setPrice(2400 * 1e8);
+
+        vm.startPrank(user1);
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+
+        assertEq(smartFlow.lastClaimAt(user1), block.timestamp);
+    }
+
+    function test_claimMyReward_revertIfPaused() public {
+        vm.startPrank(owner);
+        smartFlow.pause();
+        vm.stopPrank();
+
+        vm.startPrank(user1);
+        vm.expectRevert();
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+    }
+
+    // Test owner functions
+    function test_setThreshold() public {
+        uint256 newThreshold = 4000 * 1e8;
+
+        vm.startPrank(owner);
+        smartFlow.setThreshold(newThreshold);
+        vm.stopPrank();
+
+        assertEq(smartFlow.threshold(), newThreshold);
+    }
+
+    function test_setThreshold_RevertIfNotOwner() public {
+        vm.startPrank(user1);
+        vm.expectRevert();
+        smartFlow.setThreshold(4000 * 1e8);
+        vm.stopPrank();
+    }
+
+    function test_setRewardAmount() public {
+        uint256 newRewardAmount = 200 * 1e18;
+
+        vm.startPrank(owner);
+        smartFlow.setRewardAmount(newRewardAmount);
+        vm.stopPrank();
+
+        assertEq(smartFlow.rewardAmount(), newRewardAmount);
+    }
+
+    function test_setRewardAmount_revertIfNoOwner() public {
+        uint256 newRewardAmount = 200 * 1e18;
+
+        vm.startPrank(user1);
+        vm.expectRevert();
+        smartFlow.setRewardAmount(newRewardAmount);
+        vm.stopPrank();
+    }
+
+    function test_setCooldown() public {
+        uint256 newCooldown = 48 hours;
+
+        vm.startPrank(owner);
+        smartFlow.setCooldown(newCooldown);
+        vm.stopPrank();
+
+        assertEq(smartFlow.cooldown(), newCooldown);
+    }
+
+    function test_setCooldown_revertIfNotOwner() public {
+        uint256 newCooldown = 48 hours;
+
+        vm.startPrank(user1);
+        vm.expectRevert();
+        smartFlow.setCooldown(newCooldown);
+        vm.stopPrank();
+    }
+
+    function test_pause_unpause() public {
+        // Test pause
+        vm.startPrank(owner);
+        smartFlow.pause();
+        vm.stopPrank();
+
+        assertTrue(smartFlow.paused());
+
+        // Test unpause
+        vm.startPrank(owner);
+        smartFlow.unpause();
+        vm.stopPrank();
+
+        assertFalse(smartFlow.paused());
+    }
+
+    function test_pause_revertIfNotOwner() public {
+        vm.startPrank(user1);
+        vm.expectRevert();
+        smartFlow.pause();
+        vm.stopPrank();
+    }
+
+    // Test getLatestPrice function
+    function test_getLatestPrice_primaryFeed() public {
+        int256 price = smartFlow.getLatestPrice();
+        assertEq(uint256(price), 2800);
+    }
+
+    function test_getLatestPrice_secondaryFeed() public {
+        // Make primary feed fail
+        MockAggregator(address(primaryPriceFeed)).setShouldFail(true);
+
+        int256 price = smartFlow.getLatestPrice();
+        assertEq(uint256(price), 2850);
+    }
+
+    function test_multipleUsers_claim() public {
+        // User 1 claims
+        vm.startPrank(user1);
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+
+        // User 2 claims
+        vm.startPrank(user2);
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+
+        assertEq(smartFlow.lastClaimAt(user1), block.timestamp);
+        assertEq(smartFlow.lastClaimAt(user2), block.timestamp);
+    }
+
+    function test_claim_afterThresholdChange() public {
+        // Set price slightly above original threshold
+        MockAggregator(address(primaryPriceFeed)).setPrice(3500 * 1e8);
+
+        // Increase threshold
+        vm.startPrank(owner);
+        smartFlow.setThreshold(4000 * 1e8);
+        vm.stopPrank();
+
+        // Now claim should succeed
+        vm.startPrank(user1);
+        smartFlow.claimMyReward();
+        vm.stopPrank();
+    }
 }
 
-// IERC20 public flowToken;
-// uint256 public rewardAmount; // 10 * 1e18
-// uint256 public cooldown; // 86400
-// uint256 public threshold; // price in eur with feed decimals
-// IAggregatorV3 public priceFeed;
+// Mock contract
+contract MockERC20 is IERC20 {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
 
-// mapping(address => uint256) public lastClaimAt;
-// mapping(address => uint256) public nonces; // for delegations
+    uint256 public totalSupply;
+    uint8 public decimals = 18;
 
-// // EIP-712 domain
-// bytes32 public constant DELEGATION_TYPEHASH =
-//     keccak256(
-//         "DelegatedClaim(address delegator,address claimer,uint256 amount,uint256 nonce,uint256 deadline)"
-//     );
-// bytes32 private _domainSeparator;
+    function mint(address to, uint256 amount) public {
+        balanceOf[to] += amount;
+        totalSupply += amount;
+    }
 
-// uint256[50] private __gap;
+    function transfer(address to, uint256 amount) external returns (bool) {
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
 
-// function initialize(
-//     address _flowToken,
-//     address _priceFeed,
-//     uint256 _threshold,
-//     uint256 _rewardAmount
-// ) public initializer {
-//     __Ownable_init();
-//     __ReentrancyGuard_init();
-//     __UUPSUpgradeable_init();
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
 
-//     flowToken = IERC20Upgradeable(_flowToken);
-//     priceFeed = IAggregatorV3(_priceFeed);
-//     threshold = _threshold;
-//     rewardAmount = _rewardAmount;
-//     cooldown = 86400;
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool) {
+        require(balanceOf[from] >= amount, "Insufficient balance");
+        require(
+            allowance[from][msg.sender] >= amount,
+            "Insufficient allowance"
+        );
 
-//     _domainSeparator = _buildDomainSeparator();
-// }
-
-// function _buildDomainSeparator() internal view returns (bytes32) {
-//     // EIP-712 Domain with name/version/chainId/verifyingContract
-//     return
-//         keccak256(
-//             abi.encode(
-//                 keccak256(
-//                     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
-//                 ),
-//                 keccak256(bytes("SmartFlow")),
-//                 keccak256(bytes("1")),
-//                 block.chainid,
-//                 address(this)
-//             )
-//         );
-// }
-
-// // fragment
-// function getLatestPrice()
-//     public
-//     view
-//     returns (int256 price, uint256 updatedAt)
-// {
-//     (, int256 answer, , uint256 updated, ) = priceFeed.latestRoundData();
-//     return (answer, updated);
-// }
-
-// // fragment verifyDelegationSignature
-// function _hashDelegation(
-//     address delegator,
-//     address claimer,
-//     uint256 amount,
-//     uint256 nonce,
-//     uint256 deadline
-// ) internal view returns (bytes32) {
-//     bytes32 structHash = keccak256(
-//         abi.encode(
-//             DELEGATION_TYPEHASH,
-//             delegator,
-//             claimer,
-//             amount,
-//             nonce,
-//             deadline
-//         )
-//     );
-//     return
-//         keccak256(
-//             abi.encodePacked("\x19\x01", _domainSeparator, structHash)
-//         );
-// }
-
-// // safe internal price check & freshness
-// function _isValidDelegationSignature(
-//     address delegator,
-//     address claimer,
-//     uint256 amount,
-//     uint256 nonce,
-//     uint256 deadline,
-//     bytes calldata signature
-// ) internal view returns (bool) {
-//     bytes32 digest = _hashDelegation(
-//         delegator,
-//         claimer,
-//         amount,
-//         nonce,
-//         deadline
-//     );
-//     address recovered = ECDSAUpgradeable.recover(digest, signature);
-//     return recovered == delegator;
-// }
-
-// function _priceOk() internal view returns (bool) {
-//     (int256 price, uint256 updatedAt) = getLatestPrice();
-//     require(price > 0, "invalid price");
-//     require(block.timestamp - updatedAt <= MAX_STALENESS, "stale price");
-//     // price and threshold both as integers with same decimals handling
-//     return uint256(price) <= threshold;
-// }
-
-// // fragment
-// function claimMyReward() external nonReentrant {
-//     require(
-//         block.timestamp - lastClaimAt[msg.sender] >= cooldown,
-//         "cooldown"
-//     );
-//     require(_priceOk(), "price too high");
-//     require(
-//         flowToken.balanceOf(address(this)) >= rewardAmount,
-//         "insufficient rewards"
-//     );
-
-//     lastClaimAt[msg.sender] = block.timestamp; // effect
-//     bool ok = flowToken.transfer(msg.sender, rewardAmount); // interaction
-//     require(ok, "transfer failed");
-
-//     emit RewardClaimed(msg.sender, rewardAmount);
-// }
-
-// // fragment
-// function claimRewardFor(
-//     address delegator,
-//     address claimer,
-//     uint256 amount,
-//     uint256 nonce,
-//     uint256 deadline,
-//     bytes calldata signature
-// ) external nonReentrant {
-//     require(block.timestamp <= deadline, "signature expired");
-//     require(nonce == nonces[delegator], "bad nonce");
-//     require(
-//         block.timestamp - lastClaimAt[delegator] >= cooldown,
-//         "delegator cooldown"
-//     );
-//     require(_priceOk(), "price too high");
-//     require(amount == rewardAmount, "invalid amount"); // simple fixed
-
-//     // verify signature
-//     require(
-//         _isValidDelegationSignature(
-//             delegator,
-//             claimer,
-//             amount,
-//             nonce,
-//             deadline,
-//             signature
-//         ),
-//         "invalid signature"
-//     );
-
-//     // effect
-//     nonces[delegator] += 1;
-//     lastClaimAt[delegator] = block.timestamp;
-
-//     // interaction
-//     require(
-//         flowToken.balanceOf(address(this)) >= amount,
-//         "insufficient rewards"
-//     );
-//     bool ok = flowToken.transfer(claimer, amount);
-//     require(ok, "transfer failed");
-
-//     emit DelegatedRewardClaimed(delegator, claimer, amount);
-// }
-
-// // admin setters & authorizeUpgrade
-// function setThreshold(uint256 _threshold) external onlyOwner {
-//     threshold = _threshold;
-// }
-// function setRewardAmount(uint256 _rewardAmount) external onlyOwner {
-//     rewardAmount = _rewardAmount;
-// }
-// function setCooldown(uint256 _cooldown) external onlyOwner {
-//     cooldown = _cooldown;
-// }
-// function setPriceFeed(address _feed) external onlyOwner {
-//     priceFeed = IAggregatorV3(_feed);
-// }
-
-// function _authorizeUpgrade(
-//     address newImplementation
-// ) internal override onlyOwner {}
-//}
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        allowance[from][msg.sender] -= amount;
+        return true;
+    }
+}

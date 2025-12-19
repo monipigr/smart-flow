@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-// import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-// import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-
-// import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-// import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-// import "@openzeppelin/contracts-upgradeable/utils/cryptography/ECDSAUpgradeable.sol";
-// import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol"; // Contrato Base Upgradeable
-
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -19,6 +11,12 @@ import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 import {IAggregatorV3} from "./interfaces/IAggregatorV3.sol";
 
+/**
+ * @title SmartFlow contract
+ * @notice Allows users to claim an ERC20 token when the ETH/USD
+ * is below a threshold and the cooldown has ended
+ * @dev Uses Chainlink price feeds with fallback mechanism
+ */
 contract SmartFlow is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
@@ -44,6 +42,14 @@ contract SmartFlow is Ownable, ReentrancyGuard, Pausable {
         uint256 amount
     );
 
+    /**
+     * @param _rewardToken Address of the ERC20 reward token
+     * @param _threshold Price threshold (ETH/USD with feed decimals)
+     * @param _rewardAmount Reward amount per claim (token decimals)
+     * @param _cooldown Cooldown between claims in seconds
+     * @param _primaryPriceFeed Primary Chainlink price feed address
+     * @param _secondaryPriceFeed Secondary fallback price feed address
+     */
     constructor(
         address _rewardToken,
         uint256 _threshold,
@@ -69,6 +75,12 @@ contract SmartFlow is Ownable, ReentrancyGuard, Pausable {
         secondaryPriceFeed = IAggregatorV3(_secondaryPriceFeed);
     }
 
+    /**
+     * @notice Claim reward token if ETH price is below threshold and cooldown has ended
+     * @dev Checks price condition, cooldown, and transfers reward
+     * @dev Reverts if price is invalid or above threshold
+     * @dev Reverts if cooldown period not passed
+     */
     function claimMyReward() external nonReentrant whenNotPaused {
         int256 price = getLatestPrice();
         require(price > 0, "Invalid price");
@@ -91,6 +103,12 @@ contract SmartFlow is Ownable, ReentrancyGuard, Pausable {
         emit RewardClaimed(msg.sender, rewardAmount);
     }
 
+    /**
+     * @notice Get latest ETH/USD price from feeds
+     * @dev Tries primary feed first, falls back to secondary if needed
+     * @dev Reverts if both feeds fail or return invalid data
+     * @return price Latest ETH/USD price (with feed decimals)
+     */
     function getLatestPrice() public view returns (int256 price) {
         try primaryPriceFeed.latestRoundData() {
             (, int256 answer, uint256 updatedAt, , ) = primaryPriceFeed
@@ -123,45 +141,41 @@ contract SmartFlow is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
+    /**
+     * @notice Update price threshold
+     * @param _threshold New ETH/USD price threshold
+     */
     function setThreshold(uint256 _threshold) external onlyOwner {
         threshold = _threshold;
     }
 
+    /**
+     * @notice Update reward amount per claim
+     * @param _rewardAmount New reward amount
+     */
     function setRewardAmount(uint256 _rewardAmount) external onlyOwner {
         rewardAmount = _rewardAmount;
     }
 
+    /**
+     * @notice Update cooldown period
+     * @param _cooldown New cooldown in seconds
+     */
     function setCooldown(uint256 _cooldown) external onlyOwner {
         cooldown = _cooldown;
     }
 
+    /**
+     * @notice Pause all reward claims
+     */
     function pause() external onlyOwner {
         _pause();
     }
 
+    /**
+     * @notice Unpause reward claims
+     */
     function unpause() external onlyOwner {
         _unpause();
     }
-
-    // function claimRewardFor(address delegator, address claimer, uint256 nonce, uint256 deadline, bytes calldata signature) external nonReentrant() whenNotPaused() {
-    //     (int256 price, uint8 decimals) = getLatestPrice();
-
-    //     require(uint256(price) <= threshold, "ETH price higher than threshold");
-    //     require(
-    //         lastClaimAt[delegator] == 0 ||
-    //             block.timestamp - lastClaimAt[delegator] >= cooldown,
-    //         "Must wait 24h"
-    //     );
-    //     require(block.timestamp <= deadline, "Signature expired");
-    //     require(nonce == nonces[delegator], "Invalid nonce")
-
-    //     verifyDelegationSignature(delegator, claimer, nonce, deadline, signature); // @todo implementar funcion privada
-
-    //     nonces[delegator]++;
-    //     lastClaimAt[delegator] = block.timestamp;
-
-    //     IERC20(rewardToken).safeTransfer(claimer, rewardAmount);
-
-    //     emit DelegatedRewardClaimed(delegator, claimer, rewardAmount);
-    // }
 }
