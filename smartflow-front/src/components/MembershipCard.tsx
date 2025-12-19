@@ -14,7 +14,7 @@ const TIERS: {
   min: number;
   max: number | null;
   color: string;
-  icon: ReactElement<SVGProps<SVGSVGElement>>;
+  icon: ReactElement<SVGSVGElement>;
 }[] = [
   {
     name: "Basic",
