@@ -1,7 +1,39 @@
+// import type { NextConfig } from "next";
+
+// const nextConfig: NextConfig = {
+//   /* config options here */
+// };
+
+// export default nextConfig;
+
+// /** @type {import('next').NextConfig} */
+// const nextConfig = {
+//   webpack: (config) => {
+//     config.externals.push("pino-pretty", "lokijs", "encoding");
+//     return config;
+//   },
+// };
+
+// export default nextConfig;
+
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      // Esto evita que Webpack intente cargar módulos de Node en el navegador
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        fs: false,
+        net: false,
+        tls: false,
+        "thread-stream": false,
+      };
+    }
+    // Añadimos las librerías que dan problemas como externas
+    config.externals.push("pino-pretty", "lokijs", "encoding");
+    return config;
+  },
 };
 
 export default nextConfig;
