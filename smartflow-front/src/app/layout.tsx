@@ -1,5 +1,3 @@
-// import type { Metadata } from "next";
-// import { Geist, Geist_Mono } from "next/font/google";
 "use client";
 import "./globals.css";
 import { ReactNode } from "react";
@@ -7,7 +5,7 @@ import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { getDefaultConfig, RainbowKitProvider } from "@rainbow-me/rainbowkit";
 import "@rainbow-me/rainbowkit/styles.css";
-import { sepolia, arbitrum } from "wagmi/chains";
+import { arbitrum } from "wagmi/chains";
 import { Toaster } from "sonner";
 
 const config = getDefaultConfig({
