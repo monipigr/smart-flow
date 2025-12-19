@@ -21,7 +21,7 @@ This dApp was built as a production-oriented project, focusing on real mainnet d
 
 ## 🔥 Live Demo
 
-👉 [https://smartflow.vercel.app/](https://smartflow.vercel.app/)
+👉 [https://smartflow-dapp.vercel.app/](https://smartflow-dapp.vercel.app/)
 
 ## 🏗️ Design and Architecture Patterns
 
