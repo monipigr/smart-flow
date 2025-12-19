@@ -21,7 +21,6 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   webpack: (config, { isServer }) => {
     if (!isServer) {
-      // Esto evita que Webpack intente cargar módulos de Node en el navegador
       config.resolve.fallback = {
         ...config.resolve.fallback,
         fs: false,
@@ -30,7 +29,6 @@ const nextConfig: NextConfig = {
         "thread-stream": false,
       };
     }
-    // Añadimos las librerías que dan problemas como externas
     config.externals.push("pino-pretty", "lokijs", "encoding");
     return config;
   },

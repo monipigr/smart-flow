@@ -12,6 +12,7 @@ const config = getDefaultConfig({
   appName: "SmartFlow",
   projectId: "f7ed284ea8f5476e58f7050a03801bd3",
   chains: [arbitrum],
+  ssr: true,
 });
 
 const queryClient = new QueryClient();
